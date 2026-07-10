@@ -1252,6 +1252,9 @@ async function playCardBy(pi, idx){
   await animatePlay(pi, card, src);
   if(!state) return;
 
+  // La carte est posée sur la défausse AVANT le choix de couleur : ainsi toute vue envoyée
+  // pendant la sélection (Joker) contient déjà la carte → plus de clignotement côté joigneurs.
+  discard.push(card);
   // choix couleur si Joker
   if(card.type==='wild' || card.type==='wild4'){
     let color;
@@ -1263,7 +1266,6 @@ async function playCardBy(pi, idx){
     card.chosenColor=color;
     netEmit({ev:'recolor', rot:card._rot, card:packCard(card)});   // met à jour la carte posée (variante colorée)
   }
-  discard.push(card);
   state.currentColor=effColor(card);
   state.phase='resolving';
 
@@ -2079,7 +2081,8 @@ function clientOptimisticPlay(idx){
   Sound[(card.color==='wild'||card.type!=='number')?'special':'play']();
   const a={ type:'card', faceDown:false, key:spriteKey(card),
     cx0:src.cx, cy0:src.cy, cx1:L.discard.x+L.discard.w/2, cy1:L.discard.y+L.discard.h/2,
-    w0:src.w||L.cw, w1:L.cw, r0:src.rot||0, r1:rot, dur:240 };
+    w0:src.w||L.cw, w1:L.cw, r0:src.rot||0, r1:rot, dur:240,
+    onEnd:()=>{ if(!discard.some(d=>d.id===card.id)) discard.push(card); } };   // la carte reste posée même si la confirmation de l'hôte tarde
   NET.optim[card.id]=a;                                       // marque la carte pour ne pas la ré-animer à la confirmation
   animate(a);
 }
