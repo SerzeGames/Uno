@@ -21,11 +21,19 @@
   #boot .u{ font-family:'Fredoka',sans-serif; font-weight:700; font-size:44px; letter-spacing:1px;
             background:linear-gradient(90deg,#E4322B,#F5C518,#2FB457,#2A7FD4); -webkit-background-clip:text; background-clip:text; color:transparent; }
   #boot .s{ opacity:.7; font-size:13px; }
+  .ov-input{ position:fixed; z-index:6; display:none; box-sizing:border-box; margin:0;
+             font-family:'Space Grotesk',system-ui,sans-serif; font-weight:600; font-size:15px; line-height:1;
+             color:#f5f2ec; background:#241a2e; border:1.5px solid #3a2c4b; border-radius:12px;
+             padding:0 12px; outline:none; -webkit-appearance:none; appearance:none; }
+  .ov-input:focus{ border-color:#F5C518; box-shadow:0 0 0 3px rgba(245,197,24,0.18); }
+  .ov-input::placeholder{ color:#6f6486; }
 </style>
 </head>
 <body>
 <div id="stage"><canvas id="cv"></canvas></div>
 <div id="live" class="sr-only" aria-live="polite"></div>
+<input id="nameInput" class="ov-input" type="text" maxlength="16" placeholder="Votre pseudo" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Votre pseudo">
+<input id="chatInput" class="ov-input" type="text" maxlength="140" placeholder="Écrire un message…" autocomplete="off" aria-label="Message de tchat">
 <div id="boot"><div class="u">UNO</div><div class="s">Chargement…</div></div>
 <script>
 (function(){
@@ -64,6 +72,8 @@ const REVEAL_FLIP = 300, REVEAL_STAGGER = 45;      // révélation des cartes ad
 const cv = document.getElementById('cv');
 const ctx = cv.getContext('2d');
 const live = document.getElementById('live');
+const nameInput = document.getElementById('nameInput');
+const chatInput = document.getElementById('chatInput');
 const view = { w:0, h:0, dpr:1 };
 let SHEET = null;
 let fontsReady = false;
@@ -173,6 +183,7 @@ let hands=[[],[],[],[]];
 let drawPile=[], discard=[];
 const scores=[0,0,0,0];
 let state = null;
+let chatLog=[];                                 // tchat multijoueur : {name,text,mine} — visible seulement à l'écran des scores
 let settings = { stacking:false, mix:false, target:500 };   // variante stacking + objectif de points ('round'|200|500|1000)
 let inMenu = false;                              // true = écran de création de partie
 let rulesOverlay = false;                        // overlay règles (menu ou en jeu)
@@ -194,7 +205,7 @@ function nextIdx(i){ return (i + state.dir + 4) % 4; }
 /* ============================================================
    Layout
    ============================================================ */
-const L = { buttons:{} };
+const L = { buttons:{}, ui:{} };
 function computeLayout(){
   const W=view.w, H=view.h, s=Math.min(W,H);
   const ch = clamp(Math.round(s*0.185), 84, 150);
@@ -372,7 +383,22 @@ function frame(ts){
     if(p>=1){ anims.splice(i,1); if(a.onEnd)a.onEnd(); a._res&&a._res(); }
   }
   draw();
+  syncOverlayInputs();
   requestAnimationFrame(frame);
+}
+// Positionne les champs HTML (pseudo / tchat) par-dessus le canvas selon la mise en page dessinée
+function positionEl(el, rect){
+  if(!el) return;
+  if(!rect){ if(el.style.display!=='none'){ el.style.display='none'; if(document.activeElement===el) el.blur(); } return; }
+  el.style.display='block';
+  el.style.left=Math.round(rect.x)+'px'; el.style.top=Math.round(rect.y)+'px';
+  el.style.width=Math.round(rect.w)+'px'; el.style.height=Math.round(rect.h)+'px';
+}
+function syncOverlayInputs(){
+  const showName = inMenu && !NET.screen && !rulesOverlay && L.ui.nameField;
+  positionEl(nameInput, showName ? L.ui.nameField : null);
+  const showChat = NET.role!=='off' && state && state.over && L.ui.chatField;
+  positionEl(chatInput, showChat ? L.ui.chatField : null);
 }
 
 /* ============================================================
@@ -750,9 +776,46 @@ function wrapText(text,x,y,maxW,lh){
   if(line){ ctx.fillText(line,x,y); y+=lh; }
   return y;
 }
+function drawScoresChat(p, topY, botY){
+  const padX=20;
+  if(botY-topY < 64){ return; }                              // pas assez de place (petit écran) : tchat masqué
+  ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+  ctx.fillStyle=THEME.gold; ctx.font="700 12px 'Fredoka',sans-serif";
+  ctx.fillText('TCHAT — visible uniquement ici', p.x+padX, topY+12);
+  const inputH=40, sendW=84, gap=8;
+  const inputY=botY-inputH, inputX=p.x+padX, inputW=p.w-2*padX-sendW-gap;
+  L.ui.chatField={x:inputX, y:inputY, w:inputW, h:inputH};
+  button('chat_send', inputX+inputW+gap, inputY, sendW, inputH, 'Envoyer',
+    {fill:'rgba(42,127,212,0.18)', color:'#8fc2f5', stroke:THEME.blue, lw:1.5, round:12, font:"700 13px 'Fredoka',sans-serif"});
+  const logTop=topY+22, logBot=inputY-8, lineH=17, maxW=p.w-2*padX;
+  const maxLines=Math.max(0, Math.floor((logBot-logTop)/lineH));
+  if(!chatLog.length){
+    ctx.fillStyle=THEME.dim; ctx.font="500 12px 'Space Grotesk',sans-serif";
+    ctx.fillText('Fair-play : on discute ici, entre les manches.', p.x+padX, logTop+12);
+    return;
+  }
+  ctx.font="500 12.5px 'Space Grotesk',sans-serif";
+  const rendered=[];
+  for(const m of chatLog){
+    const full=(m.mine?'Vous':m.name)+' : '+m.text;
+    const words=full.split(' '); let line='';
+    for(const wd of words){
+      const test=line?line+' '+wd:wd;
+      if(ctx.measureText(test).width>maxW && line){ rendered.push({t:line, mine:m.mine}); line=wd; }
+      else line=test;
+    }
+    if(line) rendered.push({t:line, mine:m.mine});
+  }
+  let yy=logTop+12;
+  for(const ln of rendered.slice(-maxLines)){
+    ctx.fillStyle=ln.mine?THEME.gold:THEME.text;
+    ctx.fillText(ln.t, p.x+padX, yy); yy+=lineH;
+  }
+}
 function drawGameOver(){
   dimScreen(0.66);
-  const p=panel(Math.min(440,L.W-40), Math.min(356, L.H-24));
+  const isNet = NET.role!=='off';
+  const p=panel(Math.min(440,L.W-40), Math.min(isNet?478:356, L.H-24));
   const win=state.winner, youWin=(win===0), gw=state.gameWon;
   ctx.textAlign='center'; ctx.textBaseline='middle';
   ctx.fillStyle=youWin?THEME.gold:THEME.text; ctx.font="700 27px 'Fredoka',sans-serif";
@@ -779,6 +842,7 @@ function drawGameOver(){
   }
 
   const bw2=(p.w-52)/2, by=p.y+p.h-62;
+  if(isNet) drawScoresChat(p, ry+4, by-12);
   if(NET.role==='client'){
     ctx.fillStyle=THEME.gold; ctx.font="600 13px 'Space Grotesk',sans-serif"; ctx.textAlign='center'; ctx.textBaseline='middle';
     ctx.fillText(gw?'Partie terminée':'En attente de l\'hôte pour la manche suivante…', p.x+20+bw2/2, by+24);
@@ -872,8 +936,16 @@ function drawMenu(){
 
   const playW=Math.min(300,pw), playX=Math.round(W/2-playW/2), playY=py+ph+20;
   button('play', playX, playY, playW, 50, 'Solo — 3 IA', {fill:THEME.gold, color:'#2a1e00', glow:THEME.gold, round:16, font:"700 20px 'Fredoka',sans-serif"});
-  button('mm_play', playX, playY+60, playW, 50, 'Multijoueur — partie rapide', {fill:'rgba(42,127,212,0.16)', color:'#8fc2f5', stroke:THEME.blue, lw:2, glow:THEME.blue, round:16, font:"700 16px 'Fredoka',sans-serif"});
-  button('menu_rules', Math.round(W/2-70), playY+124, 140, 32, 'Règles du jeu', {stroke:'rgba(255,255,255,0.18)', font:"600 13px 'Space Grotesk',sans-serif"});
+
+  // Champ pseudo (utilisé pour le multijoueur) — le champ visuel est un <input> HTML positionné ici
+  const fieldH=44, fieldY=playY+64;
+  ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+  ctx.fillStyle=THEME.dim; ctx.font="700 11px 'Fredoka',sans-serif"; ctx.fillText('PSEUDO (MULTIJOUEUR)', playX+2, fieldY-7);
+  L.ui.nameField={x:playX, y:fieldY, w:playW, h:fieldH};
+
+  const mmY=fieldY+fieldH+12;
+  button('mm_play', playX, mmY, playW, 50, 'Multijoueur — partie rapide', {fill:'rgba(42,127,212,0.16)', color:'#8fc2f5', stroke:THEME.blue, lw:2, glow:THEME.blue, round:16, font:"700 16px 'Fredoka',sans-serif"});
+  button('menu_rules', Math.round(W/2-70), mmY+64, 140, 32, 'Règles du jeu', {stroke:'rgba(255,255,255,0.18)', font:"600 13px 'Space Grotesk',sans-serif"});
   button('mute', W-16-44, 12, 44, 34, Sound.muted?'🔇':'🔊', {stroke:'rgba(255,255,255,0.12)'});
 }
 
@@ -881,7 +953,7 @@ function drawMenu(){
    Rendu global
    ============================================================ */
 function draw(){
-  L.buttons={};
+  L.buttons={}; L.ui={};
   blitBackground();
   if(inMenu){ drawMenu(); if(NET.screen) drawNetScreen(); if(rulesOverlay) drawRules(); return; }
   if(!state){ return; }
@@ -956,7 +1028,13 @@ function onDown(e){
   if(inMenu){
     if(NET.screen){
       if(hitBtn('net_cancel',x,y)){ NET.screen=null; stopNet(true); resetSeats(); return; }
-      if(NET.screen==='lobby' && NET.role==='host' && hitBtn('net_start',x,y)){ if(NET.players.length>=2) hostStartMatch(); return; }
+      if(NET.screen==='lobby' && NET.role==='host'){
+        if(hitBtn('rule_classic',x,y)){ if(settings.stacking){ settings.stacking=false; Sound.play(); lobbyBroadcast(); } return; }
+        if(hitBtn('rule_stack',x,y)){ if(!settings.stacking){ settings.stacking=true; Sound.play(); lobbyBroadcast(); } return; }
+        if(settings.stacking && hitBtn('rule_mix',x,y)){ settings.mix=!settings.mix; Sound.play(); lobbyBroadcast(); return; }
+        if(hitBtn('rule_slider',x,y)){ dragSlider=true; Sound.play(); setSliderFromX(x); return; }
+        if(hitBtn('net_start',x,y)){ if(NET.players.length>=2) hostStartMatch(); return; }
+      }
       return;
     }
     if(hitBtn('opt_stack',x,y)){ settings.stacking=!settings.stacking; Sound.play(); return; }
@@ -975,6 +1053,7 @@ function onDown(e){
 
   // Fin de partie
   if(state && state.over){
+    if(NET.role!=='off' && hitBtn('chat_send',x,y)){ submitChat(); return; }
     if(NET.role==='client'){ if(hitBtn('to_menu',x,y)) NET.leave(); return; }
     if(state.gameWon){ if(hitBtn('replay',x,y)) startGame(false); }
     else { if(hitBtn('next',x,y)) startGame(true); }
@@ -1025,11 +1104,13 @@ function onDown(e){
     return;
   }
 }
+let dragSlider=false;
 function onMove(e){
   const {x,y}=pos(e);
+  if(dragSlider){ if(e.cancelable) e.preventDefault(); setSliderFromX(x); return; }
   if(inMenu){
     const over = hitBtn('play',x,y)||hitBtn('mm_play',x,y)||hitBtn('opt_stack',x,y)||hitBtn('menu_rules',x,y)||hitBtn('mute',x,y)||rulesOverlay
-      || hitBtn('net_cancel',x,y)||hitBtn('net_start',x,y)
+      || hitBtn('net_cancel',x,y)||hitBtn('net_start',x,y)||hitBtn('rule_classic',x,y)||hitBtn('rule_stack',x,y)||hitBtn('rule_mix',x,y)||hitBtn('rule_slider',x,y)
       || (settings.stacking && (hitBtn('opt_nomix',x,y)||hitBtn('opt_mix',x,y)))
       || hitBtn('tgt_0',x,y)||hitBtn('tgt_1',x,y)||hitBtn('tgt_2',x,y)||hitBtn('tgt_3',x,y);
     cv.style.cursor = over?'pointer':'default'; return;
@@ -1047,6 +1128,21 @@ function anyChromeHit(x,y){ return hitBtn('mute',x,y)||hitBtn('rules',x,y)||hitB
 cv.addEventListener('mousedown', onDown);
 cv.addEventListener('mousemove', onMove);
 cv.addEventListener('touchstart', onDown, {passive:false});
+cv.addEventListener('touchmove', onMove, {passive:false});
+function onUp(){ dragSlider=false; }
+window.addEventListener('mouseup', onUp);
+cv.addEventListener('touchend', onUp);
+cv.addEventListener('touchcancel', onUp);
+
+// Champs de saisie HTML (pseudo + tchat) — empêchent les touches de déclencher les raccourcis du jeu
+if(nameInput){
+  try{ const s=localStorage.getItem('uno_name'); if(s) nameInput.value=s; }catch(e){}
+  nameInput.addEventListener('input', ()=>{ try{ localStorage.setItem('uno_name', nameInput.value.trim()); }catch(e){} });
+  nameInput.addEventListener('keydown', e=>{ e.stopPropagation(); if(e.key==='Enter') nameInput.blur(); });
+}
+if(chatInput){
+  chatInput.addEventListener('keydown', e=>{ e.stopPropagation(); if(e.key==='Enter'){ e.preventDefault(); submitChat(); } });
+}
 
 window.addEventListener('keydown', e=>{
   Sound.unlock();
@@ -1568,10 +1664,15 @@ const NET = {
   lobby:null,                    // client : {you, players, rules}
   matchStarted:false,
   rawEvs:[], q:[], busy:false, lastSeen:0, hbT:null,
+  optim:{},                      // client : ids des cartes jouées en optimiste (anim immédiate)
   T:{ scan:3500, act:45000, hb:4000, dead:15000 }
 };
 function genName(){ const A=['Butch','Wyatt','Belle','Jesse','Doc','Calamity','Sundance','Maverick','Dusty','Ringo']; return A[Math.random()*A.length|0]+'-'+(100+Math.random()*900|0); }
-let myName = genName();
+let fallbackName = genName();
+try{ const s=localStorage.getItem('uno_name'); if(s && s.trim()) fallbackName=s.trim(); }catch(e){}
+// Pseudo effectif : ce que le joueur a saisi, sinon un nom par défaut
+function currentName(){ const v=(nameInput && nameInput.value.trim())||''; return (v||fallbackName).slice(0,16); }
+let myName = currentName();
 function packCard(c){ return { id:c.id, color:c.color, type:c.type, value:c.value, chosenColor:c.chosenColor||null, k:spriteKey(c), rot:c._rot||0 }; }
 function unpackCard(p){ return { id:p.id, color:p.color, type:p.type, value:p.value, chosenColor:p.chosenColor, __key:p.k, _rot:p.rot||0 }; }
 function rotSeat(real, viewer){ return ((real - viewer) % 4 + 4) % 4; }
@@ -1658,6 +1759,8 @@ function seatToAI(seat){
 /* ---------- matchmaking : recherche puis création automatique ---------- */
 function mmStart(){
   if(!PeerCtor){ NET.screen='error'; NET.errMsg='PeerJS indisponible (vérifiez votre connexion internet).'; return; }
+  myName = currentName();                 // fige le pseudo saisi pour cette session réseau
+  try{ localStorage.setItem('uno_name', myName); }catch(e){}
   NET.role='off'; NET.screen='searching'; NET.status='Recherche d\'une partie…';
   mmScan(1, null, 0);
 }
@@ -1739,6 +1842,14 @@ function hostOnConnection(conn){
       }
       return;
     }
+    if(msg.t==='chat'){                                     // tchat autorisé seulement à l'écran des scores (anti-triche)
+      if(!(state && state.over)) return;
+      const name=NAMES[seat]||('Joueur '+seat);
+      const text=String(msg.text||'').slice(0,140).trim(); if(!text) return;
+      chatPush(name, text, false);
+      hostRelayChat(name, text, conn);                      // rediffuse aux autres (pas à l'émetteur)
+      return;
+    }
     if(msg.t==='bye'){ try{conn.close();}catch(e){} return; }
   });
   conn.on('close', ()=>hostDropConn(conn));
@@ -1748,6 +1859,33 @@ function hostDropConn(conn){
   const seat=conn._seat; if(seat==null) return; conn._seat=null;
   if(NET.matchStarted) seatToAI(seat);
   else { NET.players=NET.players.filter(p=>p.conn!==conn); lobbyBroadcast(); }
+}
+/* ---------- tchat (visible uniquement à l'écran des scores, pour éviter la triche) ---------- */
+function chatPush(name, text, mine){
+  text=String(text||'').slice(0,140);
+  chatLog.push({ name:String(name||'?').slice(0,16), text, mine:!!mine });
+  if(chatLog.length>60) chatLog.shift();
+}
+function hostRelayChat(name, text, exceptConn){
+  for(const p of NET.players){ if(!p.conn || p.conn===exceptConn) continue; try{ p.conn.send({t:'chat', name, text}); }catch(e){} }
+}
+function submitChat(){
+  if(NET.role==='off' || !chatInput) return;
+  if(!(state && state.over)) return;                          // seulement entre les manches
+  const text=chatInput.value.trim(); if(!text) return;
+  chatInput.value='';
+  chatPush(myName, text, true);
+  if(NET.role==='host') hostRelayChat(myName, text, null);
+  else NET.send({t:'chat', text});
+}
+// Objectifs réglables via la barre du salon : « 1 manche » puis 100→1000 par pas de 50
+const LOBBY_TARGETS = (function(){ const a=['round']; for(let v=100; v<=1000; v+=50) a.push(v); return a; })();
+function targetLabel(t){ return t==='round' ? '1 manche' : (t+' pts'); }
+function setSliderFromX(x){
+  const s=L.ui.slider; if(!s) return;
+  const frac=clamp((x-s.x)/s.w, 0, 1);
+  const val=LOBBY_TARGETS[Math.round(frac*(LOBBY_TARGETS.length-1))];
+  if(val!==settings.target){ settings.target=val; lobbyBroadcast(); }
 }
 function lobbyRules(){ return {stacking:settings.stacking, mix:settings.mix, target:settings.target}; }
 function lobbyBroadcast(){
@@ -1786,6 +1924,7 @@ function clientOnData(msg){
   if(msg.t==='hb') return;
   if(msg.t==='lobby'){ NET.lobby={you:msg.you, players:msg.players, rules:msg.rules}; return; }
   if(msg.t==='tooLate'){ centerMessage("Vous n'avez pas protesté le UNO de ce joueur à temps.\nIl n'est pas pénalisé.", THEME.bad); return; }
+  if(msg.t==='chat'){ chatPush(msg.name||'?', msg.text||'', false); return; }
   if(msg.t==='bye' || msg.t==='deny'){ clientLost(); return; }
   if(msg.t==='q'){ NET.q.push(msg); pumpQ(); return; }
 }
@@ -1820,7 +1959,7 @@ async function handleNetEv(ev){
 }
 async function clientRoundStart(ev){
   runToken++; const myToken=runToken;
-  anims=[]; pending=null; cardPos={}; skipDeal=false; inMenu=false; NET.screen=null;
+  anims=[]; pending=null; cardPos={}; skipDeal=false; inMenu=false; NET.screen=null; NET.optim={};
   for(let k=0;k<4;k++){ NAMES[k]=ev.names[k]; scores[k]=ev.scores[k]; }
   hands=[[],[],[],[]];
   hands[0]=ev.myHand.map(unpackCard);
@@ -1838,7 +1977,30 @@ async function clientRoundStart(ev){
   if(myToken!==runToken) return;
   state.dealing=false; if(discard.length) state.currentColor=effColor(top());
 }
+// Le client (« joigneur ») anime sa propre carte dès le clic, sans attendre la validation de l'hôte
+function clientOptimisticPlay(idx){
+  if(idx==null || idx<0 || idx>=hands[0].length) return;
+  const card=hands[0][idx];
+  if(!card || card.color===undefined) return;                 // carte inconnue : on laisse le flux normal gérer
+  const disp=cardPos[card.id];
+  const src = disp ? {cx:disp.x, cy:disp.y, w:disp.w, rot:disp.rot} : (layoutHand(0, hands[0].length)[idx] || seatTarget(0));
+  hands[0].splice(idx,1);
+  const rot=(Math.random()*10-5)*Math.PI/180; card._rot=rot;
+  Sound[(card.color==='wild'||card.type!=='number')?'special':'play']();
+  const a={ type:'card', faceDown:false, key:spriteKey(card),
+    cx0:src.cx, cy0:src.cy, cx1:L.discard.x+L.discard.w/2, cy1:L.discard.y+L.discard.h/2,
+    w0:src.w||L.cw, w1:L.cw, r0:src.rot||0, r1:rot, dur:240 };
+  NET.optim[card.id]=a;                                       // marque la carte pour ne pas la ré-animer à la confirmation
+  animate(a);
+}
 async function clientPlay(seatVi, card){
+  // Carte déjà animée en optimiste (notre propre coup) : on annule le vol en cours et on la pose, sans doublon
+  if(NET.optim[card.id]){
+    const a=NET.optim[card.id]; delete NET.optim[card.id];
+    const i=anims.indexOf(a); if(i>=0) anims.splice(i,1);
+    if(!discard.some(d=>d.id===card.id)) discard.push(card);
+    return;
+  }
   let src=null;
   if(seatVi===0){
     const i=hands[0].findIndex(c=>c.id===card.id);
@@ -1898,7 +2060,11 @@ function applyView(v){
     else if(kind==='drewPlayable'){ state.phase='drewPlayable'; state.drewCard=hands[0].find(c=>c.id===v.await.drewId)||null; }
     else if(kind==='color') state.phase='chooseColor';
     else if(kind==='challenge'){ state.phase='challengePrompt'; state.chal={by:v.await.chalBy}; }
-    if(!pending || pending.kind!==kind) pending={kind, net:true, res:(val)=>{ NET.send({t:'act', kind, val}); }};
+    if(!pending || pending.kind!==kind) pending={kind, net:true, res:(val)=>{
+      // Feedback immédiat : on anime la carte tout de suite au lieu d'attendre l'aller-retour vers l'hôte
+      if((kind==='turn'||kind==='drewPlayable') && val && val.type==='play') clientOptimisticPlay(val.idx);
+      NET.send({t:'act', kind, val});
+    }};
   } else {
     if(pending && pending.net) pending=null;
     state.phase = v.over ? 'over' : (v.dealing ? 'dealing' : 'ai');
@@ -1920,7 +2086,7 @@ function stopNet(bye){
   if(NET.conn){ try{ if(bye) NET.conn.send({t:'bye'}); }catch(e){} try{ NET.conn.close(); }catch(e){} }
   if(NET.peer){ try{ NET.peer.destroy(); }catch(e){} }
   NET.role='off'; NET.peer=null; NET.conn=null; NET.players=[]; NET.lobby=null;
-  NET.matchStarted=false; NET.rawEvs=[]; NET.q=[]; NET.busy=false;
+  NET.matchStarted=false; NET.rawEvs=[]; NET.q=[]; NET.busy=false; NET.optim={}; chatLog=[];
   for(const k in remotePending){ const rp=remotePending[k]; delete remotePending[k]; if(rp){ clearTimeout(rp.timer); rp.res(rp.def); } }
 }
 NET.leave=function(){ stopNet(true); goMenuFromNet(); };
@@ -1943,9 +2109,33 @@ function startHb(){
 }
 
 /* ---------- écrans réseau (recherche / salon / erreur) ---------- */
+function segBtn(name,x,y,w,h,title,sub,sel){
+  L.buttons[name]={x,y,w,h};
+  roundRect(x,y,w,h,12);
+  if(sel){ ctx.save(); ctx.shadowColor=THEME.gold; ctx.shadowBlur=12; ctx.fillStyle='rgba(245,197,24,0.14)'; ctx.fill(); ctx.restore(); roundRect(x,y,w,h,12); ctx.strokeStyle=THEME.gold; ctx.lineWidth=2; ctx.stroke(); }
+  else { ctx.fillStyle='rgba(255,255,255,0.03)'; ctx.fill(); roundRect(x,y,w,h,12); ctx.strokeStyle='rgba(255,255,255,0.12)'; ctx.lineWidth=1.5; ctx.stroke(); }
+  ctx.textAlign='center';
+  ctx.textBaseline='middle'; ctx.fillStyle=sel?THEME.gold:THEME.text; ctx.font="700 15px 'Fredoka',sans-serif"; ctx.fillText(title, x+w/2, y+h/2-7);
+  ctx.fillStyle=THEME.sub; ctx.font="500 10.5px 'Space Grotesk',sans-serif"; ctx.fillText(sub, x+w/2, y+h/2+11);
+  ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+}
+function drawLobbySlider(x, y, w){
+  const n=LOBBY_TARGETS.length;
+  const idx=Math.max(0, LOBBY_TARGETS.indexOf(settings.target));
+  const knobX=x + (idx/(n-1))*w;
+  L.buttons['rule_slider']={x:x-12, y:y-16, w:w+24, h:32};   // zone de préhension généreuse (tactile)
+  L.ui.slider={x, y, w};
+  ctx.lineCap='round';
+  ctx.strokeStyle='rgba(255,255,255,0.16)'; ctx.lineWidth=6; ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+w,y); ctx.stroke();
+  ctx.strokeStyle=THEME.gold; ctx.lineWidth=6; ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(knobX,y); ctx.stroke();
+  ctx.save(); ctx.shadowColor=THEME.gold; ctx.shadowBlur=10; ctx.beginPath(); ctx.arc(knobX,y,11,0,Math.PI*2); ctx.fillStyle=THEME.gold; ctx.fill(); ctx.restore();
+  ctx.strokeStyle='rgba(0,0,0,0.25)'; ctx.lineWidth=1.5; ctx.beginPath(); ctx.arc(knobX,y,11,0,Math.PI*2); ctx.stroke();
+}
 function drawNetScreen(){
   dimScreen(0.55);
-  const p=panel(Math.min(430,L.W-40), 330);
+  let ph=330;
+  if(NET.screen==='lobby') ph = (NET.role==='host') ? 502 : 372;
+  const p=panel(Math.min(440,L.W-40), Math.min(ph, L.H-24));
   ctx.textAlign='center'; ctx.textBaseline='middle';
   if(NET.screen==='searching'){
     ctx.fillStyle=THEME.text; ctx.font="700 21px 'Fredoka',sans-serif";
@@ -1958,29 +2148,48 @@ function drawNetScreen(){
     button('net_cancel', L.W/2-70, p.y+p.h-62, 140, 42, 'Annuler', {stroke:'rgba(255,255,255,0.25)', round:12});
   } else if(NET.screen==='lobby'){
     ctx.fillStyle=THEME.text; ctx.font="700 21px 'Fredoka',sans-serif";
-    ctx.fillText('Salon — partie rapide', L.W/2, p.y+38);
+    ctx.fillText('Salon — partie rapide', L.W/2, p.y+34);
     const lob=NET.lobby||{players:[],rules:lobbyRules(),you:0};
-    let ry=p.y+78;
+    let ry=p.y+66;
     for(let s=0;s<4;s++){
       const pl=lob.players.find(q=>q.seat===s);
       ctx.beginPath(); ctx.arc(p.x+44, ry, 8, 0, Math.PI*2); ctx.fillStyle=pl?SEAT_ACCENT[s%4]:'rgba(255,255,255,0.12)'; ctx.fill();
       ctx.textAlign='left'; ctx.font="600 15px 'Space Grotesk',sans-serif";
       if(pl){ ctx.fillStyle=THEME.text; ctx.fillText(pl.name+(pl.seat===lob.you?' (vous)':'')+(s===0?' · hôte':''), p.x+62, ry+1); }
       else { ctx.fillStyle=THEME.dim; ctx.fillText('En attente… (IA si vide)', p.x+62, ry+1); }
-      ry+=31; ctx.textAlign='center';
+      ry+=29; ctx.textAlign='center';
     }
-    const r=lob.rules||{};
-    ctx.fillStyle=THEME.sub; ctx.font="500 12px 'Space Grotesk',sans-serif";
-    ctx.fillText('Règles : '+(r.stacking?('Stacking '+(r.mix?'mélange total':'sans mélange')):'classiques')+' · Objectif '+(r.target==='round'?'1 manche':r.target+' pts'), L.W/2, ry+8);
     if(NET.role==='host'){
+      // Réglages de la partie (modifiables par l'hôte, diffusés en direct)
+      ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+      ctx.fillStyle=THEME.gold; ctx.font="700 12px 'Fredoka',sans-serif"; ctx.fillText('TYPE DE PARTIE', p.x+22, p.y+198);
+      const gw=(p.w-44-10)/2, gh=44, gy=p.y+208;
+      segBtn('rule_classic', p.x+22, gy, gw, gh, 'Classique', 'Sans cumul', !settings.stacking);
+      segBtn('rule_stack',   p.x+22+gw+10, gy, gw, gh, '+2 cumulables', 'Stacking', settings.stacking);
+      const mixY=gy+gh+10;
+      if(settings.stacking){
+        L.buttons['rule_mix']={x:p.x+20, y:mixY-3, w:p.w-40, h:26};
+        checkbox(p.x+22, mixY, 20, settings.mix);
+        ctx.textBaseline='middle'; ctx.fillStyle=THEME.text; ctx.font="600 13px 'Space Grotesk',sans-serif";
+        ctx.fillText('Combiner +2 et +4 (mélange total)', p.x+22+30, mixY+10); ctx.textBaseline='alphabetic';
+      } else { delete L.buttons['rule_mix']; }
+      const objY=p.y+300;
+      ctx.fillStyle=THEME.gold; ctx.font="700 12px 'Fredoka',sans-serif"; ctx.fillText('POINTS POUR GAGNER', p.x+22, objY);
+      ctx.textAlign='right'; ctx.fillStyle=THEME.text; ctx.font="700 16px 'Fredoka',sans-serif"; ctx.fillText(targetLabel(settings.target), p.x+p.w-22, objY);
+      ctx.textAlign='left';
+      drawLobbySlider(p.x+30, objY+26, p.w-60);
       const can = NET.players.length>=2;
-      ctx.fillStyle=THEME.dim; ctx.font="500 11px 'Space Grotesk',sans-serif";
-      ctx.fillText('Départ auto à 4 joueurs · sièges vides tenus par les IA', L.W/2, p.y+p.h-78);
-      button('net_start', p.x+20, p.y+p.h-62, (p.w-52)/2, 44, 'Lancer ('+NET.players.length+'/4)',
+      ctx.textAlign='center'; ctx.fillStyle=THEME.dim; ctx.font="500 11px 'Space Grotesk',sans-serif";
+      ctx.fillText('Départ auto à 4 joueurs · sièges vides tenus par les IA', L.W/2, p.y+p.h-72);
+      button('net_start', p.x+20, p.y+p.h-58, (p.w-52)/2, 44, 'Lancer ('+NET.players.length+'/4)',
         can?{fill:THEME.gold,color:'#2a1e00',glow:THEME.gold,round:12,font:"700 15px 'Fredoka',sans-serif"}
            :{fill:'rgba(70,60,80,0.5)',color:'rgba(255,255,255,0.4)',round:12,font:"700 15px 'Fredoka',sans-serif"});
-      button('net_cancel', p.x+p.w-20-(p.w-52)/2, p.y+p.h-62, (p.w-52)/2, 44, 'Quitter', {stroke:'rgba(255,255,255,0.25)', round:12});
+      button('net_cancel', p.x+p.w-20-(p.w-52)/2, p.y+p.h-58, (p.w-52)/2, 44, 'Quitter', {stroke:'rgba(255,255,255,0.25)', round:12});
     } else {
+      const r=lob.rules||{};
+      ctx.fillStyle=THEME.sub; ctx.font="500 12px 'Space Grotesk',sans-serif"; ctx.textAlign='center';
+      ctx.fillText('Type : '+(r.stacking?('+2 cumulables '+(r.mix?'(mélange total)':'(sans mélange)')):'Classique'), L.W/2, ry+10);
+      ctx.fillStyle=THEME.text; ctx.font="700 15px 'Fredoka',sans-serif"; ctx.fillText('Objectif : '+(r.target==='round'?'1 manche':r.target+' pts'), L.W/2, ry+34);
       ctx.fillStyle=THEME.gold; ctx.font="600 13px 'Space Grotesk',sans-serif";
       ctx.fillText('En attente du lancement par l\'hôte…', L.W/2, p.y+p.h-84);
       button('net_cancel', L.W/2-70, p.y+p.h-62, 140, 42, 'Quitter', {stroke:'rgba(255,255,255,0.25)', round:12});
