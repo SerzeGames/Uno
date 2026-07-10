@@ -200,6 +200,8 @@ function isLegalPlay(card){
   if(state && state.pendingDraw>0) return canStack(card);   // en pleine pile : on ne peut qu'empiler
   return isPlayable(card, top());
 }
+// Le siège a-t-il un coup possible (jouer/empiler) ? sinon il devra piocher
+function seatHasMove(pi){ return state.pendingDraw>0 ? hands[pi].some(c=>canStack(c)) : hands[pi].some(c=>isPlayable(c, top())); }
 function nextIdx(i){ return (i + state.dir + 4) % 4; }
 
 /* ============================================================
@@ -657,12 +659,14 @@ function drawActionButtons(){
       L.buttons['drawpile']={x:d.x-6,y:d.y-6,w:d.w+12,h:d.h+12};
     }
   }
-  // Bouton UNO : actif à chaque tour du joueur, centré au-dessus de la main
-  if(!state.over && state.current===0 && (state.phase==='human'||state.phase==='drewPlayable')){
+  // Bouton « Dire UNO ! » : visible seulement quand il reste 2 cartes dont au moins une jouable
+  // (le moment d'annoncer, avant de tomber à 1 carte). En surbrillance pour guider les débutants.
+  if(!state.over && state.current===0 && (state.phase==='human'||state.phase==='drewPlayable')
+     && hands[0].length===2 && hands[0].some(c=>humanCanPlay(c))){
     const armed=state.saidUno[0];
-    const bw=132, bh=44, x=Math.round(L.W/2-bw/2), y=L.me.unoY;
-    if(armed) button('unoBtn', x,y,bw,bh, 'UNO ✓', {fill:THEME.gold, color:'#2a1e00', glow:THEME.gold, pulse:true, round:12, font:"700 20px 'Fredoka',sans-serif"});
-    else       button('unoBtn', x,y,bw,bh, 'UNO', {fill:'rgba(28,20,38,0.9)', color:THEME.gold, stroke:THEME.gold, lw:2, round:12, font:"700 20px 'Fredoka',sans-serif"});
+    const bw=176, bh=46, x=Math.round(L.W/2-bw/2), y=L.me.unoY-2;
+    if(armed) button('unoBtn', x,y,bw,bh, 'UNO ✓', {fill:THEME.gold, color:'#2a1e00', glow:THEME.gold, round:12, font:"700 20px 'Fredoka',sans-serif"});
+    else       button('unoBtn', x,y,bw,bh, 'Dire UNO !', {fill:THEME.gold, color:'#2a1e00', glow:THEME.gold, pulse:true, round:12, font:"700 19px 'Fredoka',sans-serif"});
   }
   // après pioche : jouer la carte piochée ou la garder — centré au-dessus du bouton UNO
   if(!state.over && state.phase==='drewPlayable'){
@@ -716,15 +720,18 @@ function drawColorPicker(){
 }
 function drawChallenge(){
   dimScreen(0.6);
-  const p=panel(Math.min(400,L.W-40), 240);
+  const stackChal=!!state.chal.stack;
+  const p=panel(Math.min(400,L.W-40), stackChal?266:240);
   ctx.fillStyle=THEME.text; ctx.font="700 20px 'Fredoka',sans-serif"; ctx.textAlign='center'; ctx.textBaseline='middle';
   ctx.fillText(NAMES[state.chal.by]+' joue un +4', L.W/2, p.y+42);
   ctx.fillStyle=THEME.sub; ctx.font="500 13px 'Space Grotesk',sans-serif";
   ctx.fillText('Contestez si vous pensez qu\'il pouvait suivre la couleur.', L.W/2, p.y+74);
   ctx.fillText('À tort : vous piochez 6. À raison : c\'est lui qui pioche 4.', L.W/2, p.y+96);
+  if(stackChal){ ctx.fillStyle=THEME.gold; ctx.font="600 12.5px 'Space Grotesk',sans-serif";
+    ctx.fillText('Sinon la pile démarre : à votre tour, empilez un + ou piochez.', L.W/2, p.y+120); }
   const bw=(p.w-60)/2, bh=52, y=p.y+p.h-bh-24;
   button('chal_yes', p.x+20, y, bw, bh, 'Contester', {fill:THEME.bad, color:'#fff', glow:THEME.bad, round:12, font:"700 16px 'Fredoka',sans-serif"});
-  button('chal_no', p.x+40+bw, y, bw, bh, 'Piocher 4', {stroke:'rgba(255,255,255,0.25)', round:12, font:"700 16px 'Fredoka',sans-serif"});
+  button('chal_no', p.x+40+bw, y, bw, bh, stackChal?'Ne pas contester':'Piocher 4', {stroke:'rgba(255,255,255,0.25)', round:12, font:"700 "+(stackChal?14:16)+"px 'Fredoka',sans-serif"});
 }
 function drawRules(){
   dimScreen(0.72);
@@ -754,7 +761,8 @@ function drawRules(){
     ['h','Variante : cartes + cumulables (Stacking)'],
     ['p','Si activée : sur un +2 vous pouvez rejouer un +2 (la pénalité grimpe à +4, +6...). Idem +4 sur +4 (+8, +12...).'],
     ['p','Sans mélange : +2 seulement sur +2, +4 seulement sur +4. Mélange total : +2 et +4 combinables, les pénalités s\'additionnent.'],
-    ['p','Celui qui ne peut pas relancer pioche toute la pile et passe son tour. (La contestation du +4 est désactivée en mode stacking.)'],
+    ['p','Celui qui ne peut pas relancer pioche toute la pile et passe son tour.'],
+    ['p','Contestation : seul le PREMIER +4 d\'une série peut être contesté (par le joueur suivant, avant d\'empiler). Une fois la pile lancée, on ne conteste plus.'],
     ['h','UNO !'],
     ['p','Avant de jouer votre avant-dernière carte, annoncez « UNO » (le bouton UNO est actif à chaque tour).'],
     ['p','Si vous oubliez, pas de pénalité immédiate : un autre joueur peut vous dénoncer avant de commencer son tour → vous piochez 2.'],
@@ -943,8 +951,9 @@ function drawMenu(){
   ctx.fillStyle=THEME.dim; ctx.font="700 11px 'Fredoka',sans-serif"; ctx.fillText('PSEUDO (MULTIJOUEUR)', playX+2, fieldY-7);
   L.ui.nameField={x:playX, y:fieldY, w:playW, h:fieldH};
 
-  const mmY=fieldY+fieldH+12;
-  button('mm_play', playX, mmY, playW, 50, 'Multijoueur — partie rapide', {fill:'rgba(42,127,212,0.16)', color:'#8fc2f5', stroke:THEME.blue, lw:2, glow:THEME.blue, round:16, font:"700 16px 'Fredoka',sans-serif"});
+  const mmY=fieldY+fieldH+12, mmGap=10, mmHalf=(playW-mmGap)/2;
+  button('mm_play', playX, mmY, mmHalf, 50, 'Partie rapide', {fill:'rgba(42,127,212,0.16)', color:'#8fc2f5', stroke:THEME.blue, lw:2, glow:THEME.blue, round:16, font:"700 15px 'Fredoka',sans-serif"});
+  button('mm_create', playX+mmHalf+mmGap, mmY, mmHalf, 50, 'Créer une partie', {fill:'rgba(42,127,212,0.10)', color:'#8fc2f5', stroke:THEME.blue, lw:2, round:16, font:"700 14px 'Fredoka',sans-serif"});
   button('menu_rules', Math.round(W/2-70), mmY+64, 140, 32, 'Règles du jeu', {stroke:'rgba(255,255,255,0.18)', font:"600 13px 'Space Grotesk',sans-serif"});
   button('mute', W-16-44, 12, 44, 34, Sound.muted?'🔇':'🔊', {stroke:'rgba(255,255,255,0.12)'});
 }
@@ -1028,6 +1037,10 @@ function onDown(e){
   if(inMenu){
     if(NET.screen){
       if(hitBtn('net_cancel',x,y)){ NET.screen=null; stopNet(true); resetSeats(); return; }
+      if(NET.screen==='error'){
+        if(hitBtn('net_create',x,y)){ resetSeats(); mmCreate(); return; }
+        if(hitBtn('net_retry',x,y)){ resetSeats(); mmStart(); return; }
+      }
       if(NET.screen==='lobby' && NET.role==='host'){
         if(hitBtn('rule_classic',x,y)){ if(settings.stacking){ settings.stacking=false; Sound.play(); lobbyBroadcast(); } return; }
         if(hitBtn('rule_stack',x,y)){ if(!settings.stacking){ settings.stacking=true; Sound.play(); lobbyBroadcast(); } return; }
@@ -1043,6 +1056,7 @@ function onDown(e){
     for(let i=0;i<4;i++){ if(hitBtn('tgt_'+i,x,y)){ settings.target=L.buttons['tgt_'+i].val; Sound.play(); return; } }
     if(hitBtn('play',x,y)){ resetSeats(); startGame(false); return; }
     if(hitBtn('mm_play',x,y)){ resetSeats(); mmStart(); return; }
+    if(hitBtn('mm_create',x,y)){ resetSeats(); mmCreate(); return; }
     return;
   }
 
@@ -1109,8 +1123,8 @@ function onMove(e){
   const {x,y}=pos(e);
   if(dragSlider){ if(e.cancelable) e.preventDefault(); setSliderFromX(x); return; }
   if(inMenu){
-    const over = hitBtn('play',x,y)||hitBtn('mm_play',x,y)||hitBtn('opt_stack',x,y)||hitBtn('menu_rules',x,y)||hitBtn('mute',x,y)||rulesOverlay
-      || hitBtn('net_cancel',x,y)||hitBtn('net_start',x,y)||hitBtn('rule_classic',x,y)||hitBtn('rule_stack',x,y)||hitBtn('rule_mix',x,y)||hitBtn('rule_slider',x,y)
+    const over = hitBtn('play',x,y)||hitBtn('mm_play',x,y)||hitBtn('mm_create',x,y)||hitBtn('opt_stack',x,y)||hitBtn('menu_rules',x,y)||hitBtn('mute',x,y)||rulesOverlay
+      || hitBtn('net_cancel',x,y)||hitBtn('net_start',x,y)||hitBtn('net_create',x,y)||hitBtn('net_retry',x,y)||hitBtn('rule_classic',x,y)||hitBtn('rule_stack',x,y)||hitBtn('rule_mix',x,y)||hitBtn('rule_slider',x,y)
       || (settings.stacking && (hitBtn('opt_nomix',x,y)||hitBtn('opt_mix',x,y)))
       || hitBtn('tgt_0',x,y)||hitBtn('tgt_1',x,y)||hitBtn('tgt_2',x,y)||hitBtn('tgt_3',x,y);
     cv.style.cursor = over?'pointer':'default'; return;
@@ -1278,7 +1292,10 @@ async function applyEffect(card, pi, colorBefore){
     case 'wild':
       toast('Couleur : '+COLOR_FR[card.chosenColor]); state.current=nextIdx(pi); break;
     case 'wild4':
-      if(stackOn){ state.pendingDraw+=4; state.pendingKind='wild4'; toast('Couleur '+COLOR_FR[card.chosenColor]+' · +4 · pile de '+state.pendingDraw); state.current=nextIdx(pi); }
+      if(stackOn){
+        if(state.pendingDraw===0){ await resolveWild4Stack(pi, colorBefore); }              // 1er +4 de la série : contestable
+        else { state.pendingDraw+=4; state.pendingKind='wild4'; toast('Couleur '+COLOR_FR[card.chosenColor]+' · +4 · pile de '+state.pendingDraw); state.current=nextIdx(pi); }   // en pleine série : simple empilement
+      }
       else { await resolveWild4(pi, colorBefore); }
       break;
     default:
@@ -1323,6 +1340,42 @@ async function resolveWild4(pi, colorBefore){
   } else {
     toast(NAMES[victim]+' pioche 4 et passe');
     await drawToHand(victim,4,'effect'); if(!state) return; state.current=nextIdx(victim);
+  }
+}
+// Variante stacking : seul le PREMIER +4 d'une série est contestable (avant que la pile ne démarre)
+async function resolveWild4Stack(pi, colorBefore){
+  const victim=nextIdx(pi);
+  const hadColor = hands[pi].some(c=>c.color===colorBefore);   // aurait pu suivre ? (bluff si vrai)
+  toast('Couleur : '+COLOR_FR[state.currentColor]);
+  let challenge=false;
+  const vctl=seatCtl[victim].kind;
+  if(vctl==='local'){
+    state.chal={by:pi, stack:true}; state.phase='challengePrompt'; netFlush();
+    challenge = await waitInput('challenge');
+    state.chal=null;
+  } else if(vctl==='remote'){
+    state.chal={by:pi, stack:true}; state.phase='remoteChallenge';
+    challenge = await waitRemote(victim,'challenge', v=>typeof v==='boolean', false);
+    state.chal=null;
+  } else {
+    // la pile n'est pas encore ouverte : on regarde si l'IA POURRAIT empiler sur un +4
+    const canCounter = hands[victim].some(c=> c.type==='wild4' || (c.type==='draw2' && state.mix));
+    let p = canCounter ? 0.06 : 0.18; if(hands[pi].length<=2) p+=0.12;   // conteste rarement si elle peut relancer
+    challenge = Math.random()<p;
+  }
+  if(!state) return;
+  if(challenge){
+    if(hadColor){
+      toast(NAMES[victim]+' conteste et gagne : '+NAMES[pi]+' pioche 4');
+      await drawToHand(pi,4,'effect'); if(!state) return; state.current=victim;         // la pile ne s'ouvre pas
+    } else {
+      toast(NAMES[victim]+' conteste à tort : pioche 6'); Sound.error();
+      await drawToHand(victim,6,'effect'); if(!state) return; state.current=nextIdx(victim);
+    }
+  } else {
+    state.pendingDraw+=4; state.pendingKind='wild4';                                     // pas de contestation → la pile démarre
+    toast('+4 · pile de '+state.pendingDraw+' en jeu');
+    state.current=victim;                                                                // la victime empile ou encaisse à son tour
   }
 }
 
@@ -1449,6 +1502,15 @@ async function humanTurn(){
   state.phase='human'; state.hoverIdx=-1; state.saidUno[0]=false;   // ré-annonce à chaque tour
   if(state.vuln && state.vuln.phase==='open') beginVulnWindow(false);  // les IA peuvent contester avant que le joueur agisse
   netFlush(); draw();
+  // Aucun coup possible → pioche automatique (on garde la main si une dénonciation « pas dit UNO » est en cours)
+  const accuseOpen = state.vuln && state.vuln.phase==='open' && state.vuln.player!==0;
+  if(!accuseOpen && !seatHasMove(0)){
+    if(state.vuln && state.vuln.phase==='open') resolveVuln(false,null);
+    toast(state.pendingDraw>0 ? 'Aucune relance — vous encaissez la pile' : 'Aucune carte jouable — pioche automatique');
+    draw(); await sleep(600); if(!state) return;
+    if(state.pendingDraw>0){ await drawStackAndPass(0); return; }
+    await humanDraw(); return;
+  }
   while(true){
     const act=await waitInput('turn');
     // le joueur commence son tour → toute contestation non faite « passe »
@@ -1693,7 +1755,7 @@ function buildViewFor(viewer){
   if(state.awaitSeat===viewer && state.awaitKind){
     v.await={kind:state.awaitKind};
     if(state.awaitKind==='drewPlayable' && state.drewCard) v.await.drewId=state.drewCard.id;
-    if(state.awaitKind==='challenge' && state.chal) v.await.chalBy=rotSeat(state.chal.by,viewer);
+    if(state.awaitKind==='challenge' && state.chal){ v.await.chalBy=rotSeat(state.chal.by,viewer); v.await.chalStack=!!state.chal.stack; }
   }
   return v;
 }
@@ -1790,6 +1852,16 @@ function mmScan(slot, firstEmpty, cycle){
     conn.on('close', ()=>giveup(false));
   });
 }
+function becomeHost(peer){                                  // installe l'état d'hôte + le salon
+  NET.role='host'; NET.peer=peer; NET.matchStarted=false;
+  NET.players=[{seat:0, name:myName, conn:null}];
+  NAMES[0]=myName;
+  NET.screen='lobby'; NET.status='';
+  lobbyBroadcast();
+  peer.on('connection', hostOnConnection);
+  peer.on('disconnected', ()=>{ try{peer.reconnect();}catch(e){} });
+  startHb();
+}
 function mmHost(slot, cycle){
   NET.status='Création de la table '+slot+'…';
   const peer=new PeerCtor(MM_PREFIX+slot,{debug:0});
@@ -1804,15 +1876,33 @@ function mmHost(slot, cycle){
   });
   peer.on('open', ()=>{
     if(NET.screen!=='searching'){ try{peer.destroy();}catch(e){} return; }
-    ok=true; NET.role='host'; NET.peer=peer; NET.matchStarted=false;
-    NET.players=[{seat:0, name:myName, conn:null}];
-    NAMES[0]=myName;
-    NET.screen='lobby'; NET.status='';
-    lobbyBroadcast();
-    peer.on('connection', hostOnConnection);
-    startHb();
+    ok=true; becomeHost(peer);
   });
   peer.on('disconnected', ()=>{ try{peer.reconnect();}catch(e){} });
+}
+/* ---------- création directe : on héberge, sans passer par la recherche (évite le blocage) ---------- */
+function mmCreate(){
+  if(!PeerCtor){ NET.screen='error'; NET.errMsg='PeerJS indisponible (vérifiez votre connexion internet).'; return; }
+  myName = currentName();                 // fige le pseudo saisi pour cette session réseau
+  try{ localStorage.setItem('uno_name', myName); }catch(e){}
+  NET.role='off'; NET.screen='searching'; NET.status='Création d\'une partie…';
+  mmHostSlot(1);
+}
+function mmHostSlot(slot){                                  // tente d'héberger chaque créneau, prend le premier libre
+  if(NET.screen!=='searching') return;
+  if(slot>MM_SLOTS){ NET.screen='error'; NET.errMsg='Toutes les tables sont occupées pour le moment. Réessayez dans un instant.'; return; }
+  NET.status='Création d\'une partie… (table '+slot+'/'+MM_SLOTS+')';
+  const peer=new PeerCtor(MM_PREFIX+slot,{debug:0});
+  let done=false;
+  peer.on('error', err=>{
+    if(done) return;
+    if(err && err.type==='unavailable-id'){ done=true; try{peer.destroy();}catch(e){} mmHostSlot(slot+1); }
+    else if(NET.screen==='searching'){ done=true; NET.screen='error'; NET.errMsg='Serveur PeerJS injoignable.'; }
+  });
+  peer.on('open', ()=>{
+    if(NET.screen!=='searching'){ try{peer.destroy();}catch(e){} return; }
+    done=true; becomeHost(peer);
+  });
 }
 function hostOnConnection(conn){
   conn.on('data', msg=>{
@@ -2059,16 +2149,26 @@ function applyView(v){
     if(kind==='turn') state.phase='human';
     else if(kind==='drewPlayable'){ state.phase='drewPlayable'; state.drewCard=hands[0].find(c=>c.id===v.await.drewId)||null; }
     else if(kind==='color') state.phase='chooseColor';
-    else if(kind==='challenge'){ state.phase='challengePrompt'; state.chal={by:v.await.chalBy}; }
-    if(!pending || pending.kind!==kind) pending={kind, net:true, res:(val)=>{
-      // Feedback immédiat : on anime la carte tout de suite au lieu d'attendre l'aller-retour vers l'hôte
-      if((kind==='turn'||kind==='drewPlayable') && val && val.type==='play') clientOptimisticPlay(val.idx);
-      NET.send({t:'act', kind, val});
-    }};
+    else if(kind==='challenge'){ state.phase='challengePrompt'; state.chal={by:v.await.chalBy, stack:!!v.await.chalStack}; }
+    if(!pending || pending.kind!==kind){
+      pending={kind, net:true, res:(val)=>{
+        // Feedback immédiat : on anime la carte tout de suite au lieu d'attendre l'aller-retour vers l'hôte
+        if((kind==='turn'||kind==='drewPlayable') && val && val.type==='play') clientOptimisticPlay(val.idx);
+        NET.send({t:'act', kind, val});
+      }};
+      if(kind==='turn') clientMaybeAutoDraw();
+    }
   } else {
     if(pending && pending.net) pending=null;
     state.phase = v.over ? 'over' : (v.dealing ? 'dealing' : 'ai');
   }
+}
+// Côté client (joueur distant) : pioche automatique si aucun coup possible (sauf dénonciation « pas dit UNO » en cours)
+function clientMaybeAutoDraw(){
+  if(NET.role!=='client' || !pending || pending.kind!=='turn' || !state) return;
+  if(state.vuln && state.vuln.phase==='open' && state.vuln.player!==0) return;
+  if(seatHasMove(0)) return;
+  setTimeout(()=>{ if(NET.role==='client' && pending && pending.kind==='turn' && state && !state.over && state.current===0 && !seatHasMove(0)) resolvePending({type:'draw'}); }, 620);
 }
 NET.send=function(msg){ try{ if(NET.conn && NET.conn.open!==false) NET.conn.send(msg); }catch(e){} };
 function clientLost(){
@@ -2199,7 +2299,10 @@ function drawNetScreen(){
     ctx.fillText('Multijoueur indisponible', L.W/2, p.y+50);
     ctx.fillStyle=THEME.sub; ctx.font="500 13px 'Space Grotesk',sans-serif";
     wrapTextCentered(NET.errMsg, L.W/2, p.y+96, p.w-60, 20);
-    button('net_cancel', L.W/2-70, p.y+p.h-62, 140, 42, 'Retour', {stroke:'rgba(255,255,255,0.25)', round:12});
+    const ebw=(p.w-52)/2;
+    button('net_create', p.x+20, p.y+p.h-112, ebw, 44, 'Créer une partie', {fill:THEME.gold, color:'#2a1e00', glow:THEME.gold, round:12, font:"700 14px 'Fredoka',sans-serif"});
+    button('net_retry', p.x+p.w-20-ebw, p.y+p.h-112, ebw, 44, 'Réessayer', {stroke:THEME.blue, color:'#8fc2f5', lw:2, round:12, font:"700 14px 'Fredoka',sans-serif"});
+    button('net_cancel', p.x+20, p.y+p.h-58, p.w-40, 40, 'Retour', {stroke:'rgba(255,255,255,0.25)', round:12});
   }
 }
 function wrapTextCentered(text,cx,y,maxW,lh){
