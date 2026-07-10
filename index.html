@@ -733,6 +733,28 @@ function drawChallenge(){
   button('chal_yes', p.x+20, y, bw, bh, 'Contester', {fill:THEME.bad, color:'#fff', glow:THEME.bad, round:12, font:"700 16px 'Fredoka',sans-serif"});
   button('chal_no', p.x+40+bw, y, bw, bh, stackChal?'Ne pas contester':'Piocher 4', {stroke:'rgba(255,255,255,0.25)', round:12, font:"700 "+(stackChal?14:16)+"px 'Fredoka',sans-serif"});
 }
+// Avis « au centre de la table » : pendant que la victime décide de contester un +4, tout le monde le voit.
+// (Le joueur qui décide, lui, voit déjà le panneau de contestation ci-dessus, donc on ne l'affiche pas pour lui.)
+function drawChalNotice(){
+  const cp=state.chalPending; if(!cp) return;
+  if(cp.victim===0) return;                                  // c'est moi qui décide : mon panneau de contestation suffit
+  const B=NAMES[cp.victim]||'La victime', A=NAMES[cp.by]||'Le joueur';
+  const iAmAuthor=(cp.by===0);                               // je suis le joueur qui a posé le +4
+  const main = iAmAuthor ? (B+' choisit de vous défier') : (B+' choisit de défier '+A);
+  const sub  = iAmAuthor ? 'sur votre Joker +4… ou non' : 'sur son Joker +4… ou non';
+  ctx.save(); ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font="700 17px 'Fredoka',sans-serif"; const mW=ctx.measureText(main).width;
+  ctx.font="600 12.5px 'Space Grotesk',sans-serif"; const sW=ctx.measureText(sub).width;
+  const w=Math.min(L.W-24, Math.max(mW,sW)+46), h=64;
+  const x=L.W/2-w/2;
+  let y=(L.discard ? L.discard.y - h - 16 : L.H/2 - h/2); y=Math.max(54,y);
+  const pulse=0.55+0.45*Math.sin(performance.now()/360);
+  ctx.shadowColor='rgba(0,0,0,0.55)'; ctx.shadowBlur=26; roundRect(x,y,w,h,15); ctx.fillStyle='rgba(20,10,26,0.95)'; ctx.fill(); ctx.shadowBlur=0;
+  roundRect(x,y,w,h,15); ctx.strokeStyle=THEME.gold; ctx.globalAlpha=pulse; ctx.lineWidth=2.5; ctx.stroke(); ctx.globalAlpha=1;
+  ctx.fillStyle=THEME.gold; ctx.font="700 17px 'Fredoka',sans-serif"; ctx.fillText(main, L.W/2, y+23);
+  ctx.fillStyle=THEME.sub;  ctx.font="600 12.5px 'Space Grotesk',sans-serif"; ctx.fillText(sub, L.W/2, y+45);
+  ctx.restore();
+}
 function drawRules(){
   dimScreen(0.72);
   const w=Math.min(560,L.W-32), h=Math.min(560,L.H-40);
@@ -981,6 +1003,7 @@ function draw(){
   drawToast();
   drawCenterMsg();
   if(state.phase==='chooseColor') drawColorPicker();
+  drawChalNotice();
   if(state.chal) drawChallenge();
   if(state.over) drawGameOver();
   if(rulesOverlay) drawRules();
@@ -1316,6 +1339,7 @@ async function resolveWild4(pi, colorBefore){
   const victim=nextIdx(pi);
   const hadColor = hands[pi].some(c=>c.color===colorBefore);   // aurait pu suivre ? (bluff si vrai)
   toast('Couleur : '+COLOR_FR[state.currentColor]);
+  state.chalPending={by:pi, victim};                       // avis « la victime décide de contester ou non » visible par toute la table
   let challenge=false;
   const vctl=seatCtl[victim].kind;
   if(vctl==='local'){
@@ -1331,6 +1355,7 @@ async function resolveWild4(pi, colorBefore){
     challenge = Math.random()<p;
   }
   if(!state) return;
+  state.chalPending=null; netFlush();                      // décision prise : l'avis disparaît pour tout le monde
   if(challenge){
     if(hadColor){
       toast(NAMES[victim]+' conteste et gagne : '+NAMES[pi]+' pioche 4');
@@ -1349,6 +1374,7 @@ async function resolveWild4Stack(pi, colorBefore){
   const victim=nextIdx(pi);
   const hadColor = hands[pi].some(c=>c.color===colorBefore);   // aurait pu suivre ? (bluff si vrai)
   toast('Couleur : '+COLOR_FR[state.currentColor]);
+  state.chalPending={by:pi, victim};                       // avis « la victime décide de contester ou non » visible par toute la table
   let challenge=false;
   const vctl=seatCtl[victim].kind;
   if(vctl==='local'){
@@ -1366,6 +1392,7 @@ async function resolveWild4Stack(pi, colorBefore){
     challenge = Math.random()<p;
   }
   if(!state) return;
+  state.chalPending=null; netFlush();                      // décision prise : l'avis disparaît pour tout le monde
   if(challenge){
     if(hadColor){
       toast(NAMES[victim]+' conteste et gagne : '+NAMES[pi]+' pioche 4');
@@ -1690,7 +1717,7 @@ async function startGame(continueMatch){
     current:0, dir:1, currentColor:null,
     phase:'dealing', dealing:true, revealed:[0,0,0,0],
     over:false, winner:-1, hoverIdx:-1,
-    turnCounter:0, drewCard:null, chal:null,
+    turnCounter:0, drewCard:null, chal:null, chalPending:null,
     saidUno:[false,false,false,false], vuln:null, centerMsg:null,
     stacking:settings.stacking, mix:settings.mix,      // variante figée pour la manche
     pendingDraw:0, pendingKind:null,
@@ -1729,6 +1756,7 @@ const NET = {
   matchStarted:false,
   rawEvs:[], q:[], busy:false, lastSeen:0, hbT:null,
   optim:{},                      // client : ids des cartes jouées en optimiste (anim immédiate)
+  acked:null,                    // client : invite (color|challenge) à laquelle on a déjà répondu → on la garde masquée en attendant l'hôte
   T:{ scan:3500, act:45000, hb:4000, dead:15000 }
 };
 function genName(){ const A=['Butch','Wyatt','Belle','Jesse','Doc','Calamity','Sundance','Maverick','Dusty','Ringo']; return A[Math.random()*A.length|0]+'-'+(100+Math.random()*900|0); }
@@ -1754,6 +1782,7 @@ function buildViewFor(viewer){
     over:state.over, gameWon:state.gameWon, winner:state.winner>=0?rotSeat(state.winner,viewer):-1,
     roundPoints:state.roundPoints, revealing:!!state.revealing, await:null };
   for(let k=0;k<4;k++){ const r=(viewer+k)%4; v.names.push(NAMES[r]); v.counts.push(hands[r].length); v.scores.push(scores[r]); }
+  v.chalPending = state.chalPending ? { by:rotSeat(state.chalPending.by,viewer), victim:rotSeat(state.chalPending.victim,viewer) } : null;
   if(state.awaitSeat===viewer && state.awaitKind){
     v.await={kind:state.awaitKind};
     if(state.awaitKind==='drewPlayable' && state.drewCard) v.await.drewId=state.drewCard.id;
@@ -2051,7 +2080,7 @@ async function handleNetEv(ev){
 }
 async function clientRoundStart(ev){
   runToken++; const myToken=runToken;
-  anims=[]; pending=null; cardPos={}; skipDeal=false; inMenu=false; NET.screen=null; NET.optim={};
+  anims=[]; pending=null; cardPos={}; skipDeal=false; inMenu=false; NET.screen=null; NET.optim={}; NET.acked=null;
   for(let k=0;k<4;k++){ NAMES[k]=ev.names[k]; scores[k]=ev.scores[k]; }
   hands=[[],[],[],[]];
   hands[0]=ev.myHand.map(unpackCard);
@@ -2059,7 +2088,7 @@ async function clientRoundStart(ev){
   discard=[]; drawPile=[];
   state={ current:1, dir:1, currentColor:null,
     phase:'dealing', dealing:true, revealed:[0,0,0,0],
-    over:false, winner:-1, hoverIdx:-1, turnCounter:0, drewCard:null, chal:null,
+    over:false, winner:-1, hoverIdx:-1, turnCounter:0, drewCard:null, chal:null, chalPending:null,
     saidUno:[false,false,false,false], vuln:null, centerMsg:null,
     stacking:ev.stacking, mix:ev.mix, pendingDraw:0, pendingKind:null,
     target:ev.target, roundPoints:0, breakdown:null, gameWon:false,
@@ -2079,10 +2108,10 @@ function clientOptimisticPlay(idx){
   hands[0].splice(idx,1);
   const rot=(Math.random()*10-5)*Math.PI/180; card._rot=rot;
   Sound[(card.color==='wild'||card.type!=='number')?'special':'play']();
-  const a={ type:'card', faceDown:false, key:spriteKey(card),
+  const a={ type:'card', faceDown:false, key:spriteKey(card), card:card,
     cx0:src.cx, cy0:src.cy, cx1:L.discard.x+L.discard.w/2, cy1:L.discard.y+L.discard.h/2,
     w0:src.w||L.cw, w1:L.cw, r0:src.rot||0, r1:rot, dur:240,
-    onEnd:()=>{ if(!discard.some(d=>d.id===card.id)) discard.push(card); } };   // la carte reste posée même si la confirmation de l'hôte tarde
+    onEnd:()=>{ a.done=true; if(!discard.some(d=>d.id===card.id)) discard.push(card); } };   // la carte reste posée même si la confirmation de l'hôte tarde
   NET.optim[card.id]=a;                                       // marque la carte pour ne pas la ré-animer à la confirmation
   animate(a);
 }
@@ -2129,7 +2158,14 @@ async function clientDrawAnim(seatVi, n, cards){
 }
 function applyView(v){
   for(let k=0;k<4;k++){ NAMES[k]=v.names[k]; scores[k]=v.scores[k]; }
+  // L'hôte nous redemande de jouer alors qu'un coup optimiste n'est pas confirmé → il l'a refusé : on l'annule.
+  if(v.await && v.await.kind==='turn'){
+    for(const id in NET.optim){ const a=NET.optim[id]; const i=anims.indexOf(a); if(i>=0) anims.splice(i,1); }
+    NET.optim={};
+  }
   hands[0]=v.myHand.map(unpackCard);
+  // Une carte jouée en optimiste (pas encore confirmée) ne doit pas réapparaître dans la main.
+  for(const id in NET.optim){ const i=hands[0].findIndex(c=>c.id===id); if(i>=0) hands[0].splice(i,1); }
   if(!v.revealing){
     for(let s=1;s<4;s++){
       const want=v.counts[s], h=hands[s];
@@ -2138,6 +2174,8 @@ function applyView(v){
     }
   }
   discard=v.top4.map(unpackCard);
+  // ...et elle reste visible sur la défausse tant que l'hôte n'a pas renvoyé la vue qui la contient.
+  for(const id in NET.optim){ const a=NET.optim[id]; if(a && a.done && a.card && !discard.some(d=>d.id===a.card.id)) discard.push(a.card); }
   state.dealing=v.dealing; state.current=v.current; state.dir=v.dir; state.currentColor=v.currentColor;
   state.pendingDraw=v.pendingDraw; state.pendingKind=v.pendingKind;
   state.stacking=v.stacking; state.mix=v.mix; state.target=v.target;
@@ -2147,7 +2185,9 @@ function applyView(v){
   state.over=v.over; state.gameWon=v.gameWon; state.winner=v.winner; state.roundPoints=v.roundPoints;
   state.revealing = v.revealing || (state.revealing && v.over);
   state.chal=null; state.drewCard=null;
-  if(v.await){
+  state.chalPending = v.chalPending ? { by:v.chalPending.by, victim:v.chalPending.victim } : null;
+  if(!v.await || v.await.kind!==NET.acked) NET.acked=null;   // l'invite a changé / disparu : on réautorise son affichage
+  if(v.await && v.await.kind!==NET.acked){                   // si on y a déjà répondu, on garde l'invite masquée en attendant l'hôte
     const kind=v.await.kind;
     if(kind==='turn') state.phase='human';
     else if(kind==='drewPlayable'){ state.phase='drewPlayable'; state.drewCard=hands[0].find(c=>c.id===v.await.drewId)||null; }
@@ -2155,13 +2195,15 @@ function applyView(v){
     else if(kind==='challenge'){ state.phase='challengePrompt'; state.chal={by:v.await.chalBy, stack:!!v.await.chalStack}; }
     if(!pending || pending.kind!==kind){
       pending={kind, net:true, res:(val)=>{
-        // Feedback immédiat : on anime la carte tout de suite au lieu d'attendre l'aller-retour vers l'hôte
+        // Feedback immédiat : on ferme l'invite / on anime la carte sans attendre l'aller-retour vers l'hôte.
         if((kind==='turn'||kind==='drewPlayable') && val && val.type==='play') clientOptimisticPlay(val.idx);
+        else if(kind==='color'){ state.phase='ai'; NET.acked='color'; }           // le sélecteur de couleur se referme tout de suite
+        else if(kind==='challenge'){ state.chal=null; state.chalPending=null; state.phase='ai'; NET.acked='challenge'; }   // la fenêtre de contestation se referme tout de suite
         NET.send({t:'act', kind, val});
       }};
       if(kind==='turn') clientMaybeAutoDraw();
     }
-  } else {
+  } else if(!v.await){
     if(pending && pending.net) pending=null;
     state.phase = v.over ? 'over' : (v.dealing ? 'dealing' : 'ai');
   }
@@ -2189,7 +2231,7 @@ function stopNet(bye){
   if(NET.conn){ try{ if(bye) NET.conn.send({t:'bye'}); }catch(e){} try{ NET.conn.close(); }catch(e){} }
   if(NET.peer){ try{ NET.peer.destroy(); }catch(e){} }
   NET.role='off'; NET.peer=null; NET.conn=null; NET.players=[]; NET.lobby=null;
-  NET.matchStarted=false; NET.rawEvs=[]; NET.q=[]; NET.busy=false; NET.optim={}; chatLog=[];
+  NET.matchStarted=false; NET.rawEvs=[]; NET.q=[]; NET.busy=false; NET.optim={}; NET.acked=null; chatLog=[];
   for(const k in remotePending){ const rp=remotePending[k]; delete remotePending[k]; if(rp){ clearTimeout(rp.timer); rp.res(rp.def); } }
 }
 NET.leave=function(){ stopNet(true); goMenuFromNet(); };
